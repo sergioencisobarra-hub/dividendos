@@ -1,139 +1,135 @@
 import streamlit as st
 import pandas as pd
+import calendar
+from datetime import datetime
 import yfinance as yf
+import plotly.express as px
 
-st.set_page_config(page_title="Dashboard Cartera", layout="wide")
-st.title("📊 Dashboard de mi Cartera")
+st.set_page_config(page_title="Panel Dividendos", layout="wide")
 
-uploaded_file = st.file_uploader("Sube tu archivo CARTERA.xlsx", type=["xlsx"])
+st.title("📊 Panel Profesional de Dividendos")
 
-if uploaded_file is not None:
+RETENCION = 0.19
 
-    # ==============================
-    # 1️⃣ CARGA EXCEL
-    # ==============================
-    df = pd.read_excel(uploaded_file)
-    df.columns = df.columns.str.strip()
+# ------------------------------------
+# CARGA DATOS
+# ------------------------------------
+@st.cache_data
+def cargar_datos():
+    cartera = pd.read_excel("CARTERA_acc_etf_fon.xlsx", sheet_name="CARTERA")
+    dividendos = pd.read_excel("CARTERA_acc_etf_fon.xlsx", sheet_name="DIVIDENDOS")
+    
+    dividendos["Fecha_pago"] = pd.to_datetime(dividendos["Fecha_pago"])
+    
+    df = dividendos.merge(cartera, on=["Empresa", "Ticker"], how="left")
+    
+    df["Importe_bruto"] = df["Dividendo_por_accion"] * df["Nº_acciones"]
+    df["Importe_neto"] = df["Importe_bruto"] * (1 - RETENCION)
+    
+    return df, cartera
 
-    # Forzar columnas numéricas reales
-    df["ACCIONES"] = pd.to_numeric(df["ACCIONES"], errors="coerce")
-    df["PRECIO TOTAL"] = pd.to_numeric(df["PRECIO TOTAL"], errors="coerce")
+df, cartera = cargar_datos()
 
-    # Quinta columna = ticker original
-    df["Ticker_Original"] = df.iloc[:, 4].astype(str)
-
-    # ==============================
-    # 2️⃣ CONVERSIÓN A YAHOO
-    # ==============================
-    def convertir_ticker(t):
-        t = t.strip()
-        if t.startswith("BME:"):
-            return t.split(":")[1] + ".MC"
-        if t.startswith("LON:"):
-            return t.split(":")[1] + ".L"
-        if t.startswith("ETR:") or t.startswith("etr:") or t.startswith("vie:"):
-            return t.split(":")[1] + ".DE"
-        if t.startswith("NYSE:") or t.startswith("nyse:"):
-            return t.split(":")[1]
-        if t.startswith("NASDAQ:"):
-            return t.split(":")[1]
-        if t.startswith("AMS:"):
-            return t.split(":")[1] + ".AS"
-        if t.startswith("epa:"):
-            return t.split(":")[1] + ".PA"
-        return t
-
-    df["Ticker"] = df["Ticker_Original"].apply(convertir_ticker).str.upper()
-
-    # ==============================
-    # 3️⃣ TIPOS DE CAMBIO
-    # ==============================
+# ------------------------------------
+# ESTIMACIÓN ANUAL AUTOMÁTICA
+# ------------------------------------
+def estimar_dividendo_anual(ticker, acciones):
     try:
-        eurusd = float(yf.download("EURUSD=X", period="1d", progress=False)["Close"].iloc[-1])
-        gbpusd = float(yf.download("GBPUSD=X", period="1d", progress=False)["Close"].iloc[-1])
+        stock = yf.Ticker(ticker)
+        dividendos = stock.dividends.tail(4)
+        anual = dividendos.sum()
+        return anual * acciones
     except:
-        st.error("No se pudieron descargar tipos de cambio.")
-        st.stop()
+        return 0
 
-    # ==============================
-    # 4️⃣ DESCARGA PRECIOS POR ACCIÓN
-    # ==============================
-    precios_por_accion = []
+st.subheader("📈 Estimación Dividendos Anuales")
 
-    for t in df["Ticker"]:
-        try:
-            datos = yf.download(t, period="1d", progress=False)
-            if datos.empty:
-                raise Exception("Sin datos")
+estimaciones = []
+for _, row in cartera.iterrows():
+    anual = estimar_dividendo_anual(row["Ticker"], row["Nº_acciones"])
+    coste = row["Precio_medio"] * row["Nº_acciones"]
+    yield_coste = (anual / coste * 100) if coste > 0 else 0
+    
+    estimaciones.append({
+        "Empresa": row["Empresa"],
+        "Ingreso anual estimado (€)": round(anual,2),
+        "Yield sobre coste (%)": round(yield_coste,2)
+    })
 
-            precio = float(datos["Close"].iloc[-1])
+df_estimaciones = pd.DataFrame(estimaciones)
+st.dataframe(df_estimaciones, use_container_width=True)
 
-            # 🇬🇧 UK (GBP)
-            if t.endswith(".L"):
+total_anual_estimado = df_estimaciones["Ingreso anual estimado (€)"].sum()
+st.markdown(f"### 💰 Total anual estimado: {round(total_anual_estimado,2)} €")
 
-                # Muchas acciones UK cotizan en peniques
-                if precio > 100:
-                    precio = precio / 100
+# ------------------------------------
+# CALENDARIO MENSUAL
+# ------------------------------------
+st.subheader("📅 Calendario de Cobros")
 
-                # GBP → USD → EUR
-                precio = (precio * gbpusd) / eurusd
+col1, col2 = st.columns(2)
 
-            # 🇺🇸 USA (USD)
-            elif "." not in t:
-                precio = precio / eurusd
+with col1:
+    año = st.selectbox("Año", sorted(df["Fecha_pago"].dt.year.unique()))
 
-            # 🇪🇺 Europa ya en EUR
-
-            precios_por_accion.append(precio)
-
-        except:
-            st.warning(f"No se pudo obtener precio para {t}")
-            precios_por_accion.append(None)
-
-    df["Precio por Acción €"] = precios_por_accion
-
-    # Eliminar filas inválidas
-    df = df.dropna(subset=["ACCIONES", "PRECIO TOTAL", "Precio por Acción €"])
-
-    # ==============================
-    # 5️⃣ CÁLCULOS FINANCIEROS
-    # ==============================
-    df["Valor Actual €"] = df["Precio por Acción €"] * df["ACCIONES"]
-    df["Inversión Inicial €"] = df["PRECIO TOTAL"]
-
-    df["Rentabilidad €"] = df["Valor Actual €"] - df["Inversión Inicial €"]
-    df["Rentabilidad %"] = (df["Rentabilidad €"] / df["Inversión Inicial €"]) * 100
-
-    total_inicial = float(df["Inversión Inicial €"].sum())
-    total_actual = float(df["Valor Actual €"].sum())
-    rentabilidad_total = ((total_actual - total_inicial) / total_inicial) * 100
-
-    # ==============================
-    # 6️⃣ DASHBOARD
-    # ==============================
-    st.divider()
-
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Inversión Inicial", f"{total_inicial:,.2f} €")
-    col2.metric("Valor Actual", f"{total_actual:,.2f} €")
-    col3.metric("Rentabilidad Total", f"{rentabilidad_total:.2f} %")
-
-    st.divider()
-
-    st.subheader("Detalle por posición")
-    st.dataframe(
-        df[[
-            "Ticker",
-            "ACCIONES",
-            "Precio por Acción €",
-            "Valor Actual €",
-            "Inversión Inicial €",
-            "Rentabilidad €",
-            "Rentabilidad %"
-        ]].sort_values("Rentabilidad %", ascending=False),
-        use_container_width=True
+with col2:
+    mes = st.selectbox(
+        "Mes",
+        range(1, 13),
+        format_func=lambda x: calendar.month_name[x]
     )
 
-else:
-    st.info("Sube tu archivo Excel para empezar.")
+df_mes = df[
+    (df["Fecha_pago"].dt.year == año) &
+    (df["Fecha_pago"].dt.month == mes)
+]
 
+cal = calendar.monthcalendar(año, mes)
+tabla = []
+
+for semana in cal:
+    fila = []
+    for dia in semana:
+        if dia == 0:
+            fila.append("")
+        else:
+            pagos = df_mes[df_mes["Fecha_pago"].dt.day == dia]
+            if not pagos.empty:
+                total = pagos["Importe_neto"].sum()
+                fila.append(f"💸 {dia}\n{round(total,2)} €")
+            else:
+                fila.append(str(dia))
+    tabla.append(fila)
+
+st.table(tabla)
+
+# ------------------------------------
+# DETALLE MES
+# ------------------------------------
+if not df_mes.empty:
+    st.subheader("Detalle del mes")
+    st.dataframe(df_mes.sort_values("Fecha_pago"), use_container_width=True)
+    
+    total_bruto = df_mes["Importe_bruto"].sum()
+    total_neto = df_mes["Importe_neto"].sum()
+    
+    st.markdown(f"**Bruto:** {round(total_bruto,2)} €")
+    st.markdown(f"**Neto (19%):** {round(total_neto,2)} €")
+
+# ------------------------------------
+# GRÁFICO ACUMULADO
+# ------------------------------------
+st.subheader("📊 Flujo de Dividendos Mensual")
+
+df["Mes"] = df["Fecha_pago"].dt.to_period("M").astype(str)
+
+resumen_mensual = df.groupby("Mes")["Importe_neto"].sum().reset_index()
+
+fig = px.bar(
+    resumen_mensual,
+    x="Mes",
+    y="Importe_neto",
+    title="Dividendos Netos por Mes",
+)
+
+st.plotly_chart(fig, use_container_width=True)
