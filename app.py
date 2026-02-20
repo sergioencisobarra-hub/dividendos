@@ -16,19 +16,20 @@ RETENCION = 0.19
 # ------------------------------------
 @st.cache_data
 def cargar_datos():
-    cartera = pd.read_excel("CARTERA_acc_etf_fon.xlsx", sheet_name="CARTERA")
-    dividendos = pd.read_excel("CARTERA_acc_etf_fon.xlsx", sheet_name="DIVIDENDOS")
-    
-    dividendos["Fecha_pago"] = pd.to_datetime(dividendos["Fecha_pago"])
-    
-    df = dividendos.merge(cartera, on=["Empresa", "Ticker"], how="left")
-    
-    df["Importe_bruto"] = df["Dividendo_por_accion"] * df["Nº_acciones"]
-    df["Importe_neto"] = df["Importe_bruto"] * (1 - RETENCION)
-    
-    return df, cartera
+    try:
+        cartera = pd.read_excel("CARTERA_acc_etf_fon.xlsx", sheet_name="CARTERA", engine="openpyxl")
+        dividendos = pd.read_excel("CARTERA_acc_etf_fon.xlsx", sheet_name="DIVIDENDOS", engine="openpyxl")
+    except Exception as e:
+        st.error(f"Error cargando Excel: {e}")
+        st.stop()
 
-df, cartera = cargar_datos()
+    dividendos["Fecha_pago"] = pd.to_datetime(dividendos["Fecha_pago"])
+    df = dividendos.merge(cartera, on=["Empresa", "Ticker"], how="left")
+
+    df["Importe_bruto"] = df["Dividendo_por_accion"] * df["Nº_acciones"]
+    df["Importe_neto"] = df["Importe_bruto"] * (1 - 0.19)
+
+    return df, cartera
 
 # ------------------------------------
 # ESTIMACIÓN ANUAL AUTOMÁTICA
@@ -133,3 +134,4 @@ fig = px.bar(
 )
 
 st.plotly_chart(fig, use_container_width=True)
+
