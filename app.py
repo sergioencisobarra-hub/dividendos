@@ -14,22 +14,39 @@ RETENCION = 0.19
 # ------------------------------------
 # CARGA DATOS
 # ------------------------------------
+import os
+
 @st.cache_data
 def cargar_datos():
+    ruta = "CARTERA_acc_etf_fon.xlsx"
+
+    if not os.path.exists(ruta):
+        st.error("❌ No se encuentra el archivo Excel en el repositorio.")
+        st.stop()
+
     try:
-        cartera = pd.read_excel("CARTERA_acc_etf_fon.xlsx", sheet_name="CARTERA", engine="openpyxl")
-        dividendos = pd.read_excel("CARTERA_acc_etf_fon.xlsx", sheet_name="DIVIDENDOS", engine="openpyxl")
+        cartera = pd.read_excel(ruta, sheet_name="CARTERA", engine="openpyxl")
+        dividendos = pd.read_excel(ruta, sheet_name="DIVIDENDOS", engine="openpyxl")
     except Exception as e:
-        st.error(f"Error cargando Excel: {e}")
+        st.error(f"❌ Error leyendo el Excel: {e}")
         st.stop()
 
     dividendos["Fecha_pago"] = pd.to_datetime(dividendos["Fecha_pago"])
+
     df = dividendos.merge(cartera, on=["Empresa", "Ticker"], how="left")
 
     df["Importe_bruto"] = df["Dividendo_por_accion"] * df["Nº_acciones"]
     df["Importe_neto"] = df["Importe_bruto"] * (1 - 0.19)
 
     return df, cartera
+
+
+resultado = cargar_datos()
+
+if resultado:
+    df, cartera = resultado
+else:
+    st.stop()
 
 # ------------------------------------
 # ESTIMACIÓN ANUAL AUTOMÁTICA
@@ -134,4 +151,5 @@ fig = px.bar(
 )
 
 st.plotly_chart(fig, use_container_width=True)
+
 
