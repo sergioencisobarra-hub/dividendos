@@ -1,6 +1,4 @@
 streamlit
 pandas
-openpyxl
-yfinance
+requests
 plotly
-python-dateutil
