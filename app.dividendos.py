@@ -17,15 +17,13 @@ RUTA = "CARTERA_acc_etf_fon.xlsx"
 
 @st.cache_data
 def cargar_datos():
-    cartera = pd.read_excel(RUTA, sheet_name="CARTERA", engine="openpyxl")
-    dividendos = pd.read_excel(RUTA, sheet_name="DIVIDENDOS_PREVISTOS", engine="openpyxl")
 
-    dividendos["Fecha_ex"] = pd.to_datetime(dividendos["Fecha_ex"])
-    dividendos["Fecha_pago"] = pd.to_datetime(dividendos["Fecha_pago"])
+    xls = pd.ExcelFile(RUTA, engine="openpyxl")
 
-    df = dividendos.merge(cartera, on=["Empresa", "Ticker"], how="left")
+    st.write("📂 Hojas detectadas en el Excel:")
+    st.write(xls.sheet_names)
 
-    return df
+    st.stop()
 
 df = cargar_datos()
 
@@ -179,3 +177,4 @@ df_sorted["Acumulado"] = df_sorted["Neto €"].cumsum()
 
 fig = px.line(df_sorted, x="Fecha", y="Acumulado", markers=True)
 st.plotly_chart(fig, use_container_width=True)
+
