@@ -1,17 +1,24 @@
 import streamlit as st
 import pandas as pd
-import yfinance as yf
 import requests
 import calendar
 from datetime import datetime
 from collections import defaultdict
 import plotly.express as px
 
-# ---------------- CONFIGURACIÓN ----------------
+# ==============================
+# CONFIGURACIÓN
+# ==============================
+
 st.set_page_config(page_title="Panel Dividendos Internacional", layout="wide")
 st.title("📆 Panel Profesional de Dividendos")
 
-# ---------------- CARTERA ----------------
+API_KEY = "hD9hC5yNHNLgzSn88NaDvmCIMOEEkMho"
+
+# ==============================
+# CARTERA
+# ==============================
+
 cartera = [
     ("ENAGÁS", "ENG.MC", 350),
     ("INDITEX", "ITX.MC", 100),
@@ -28,14 +35,24 @@ cartera = [
     ("PROCTER & GAMBLE", "PG", 25),
 ]
 
-# ---------------- INPUTS ----------------
-mes = st.selectbox("Mes", list(range(1, 13)),
-                   format_func=lambda x: datetime(2025, x, 1).strftime("%B"))
+# ==============================
+# INPUTS
+# ==============================
+
+mes = st.selectbox(
+    "Mes",
+    list(range(1, 13)),
+    format_func=lambda x: datetime(2025, x, 1).strftime("%B")
+)
+
 año = st.number_input("Año", value=datetime.now().year)
 
 vista = st.radio("Vista", ["Calendario", "Detalle de Lista"], horizontal=True)
 
-# ---------------- TIPOS DE CAMBIO ----------------
+# ==============================
+# TIPOS DE CAMBIO
+# ==============================
+
 def obtener_tipos_cambio():
     try:
         r = requests.get(
@@ -47,7 +64,10 @@ def obtener_tipos_cambio():
 
 rates = obtener_tipos_cambio()
 
-# ---------------- RETENCIONES ----------------
+# ==============================
+# RETENCIONES
+# ==============================
+
 def calcular_neto(bruto_total, currency):
     ret_origen = {
         "USD": 0.30,
@@ -65,40 +85,69 @@ def calcular_neto(bruto_total, currency):
 
     return neto
 
-# ---------------- OBTENER DIVIDENDOS ----------------
-def dividendos_del_mes(ticker):
-    tk = yf.Ticker(ticker)
-    hist = tk.dividends
+# ==============================
+# OBTENER DIVIDENDOS DESDE FMP
+# ==============================
 
-    if hist.empty:
+def obtener_dividendos_mes(ticker, año, mes):
+
+    url = f"https://financialmodelingprep.com/api/v3/historical-price-full/stock_dividend/{ticker}?apikey={API_KEY}"
+
+    try:
+        response = requests.get(url)
+        data = response.json()
+
+        if "historical" not in data:
+            return []
+
+        resultados = []
+
+        for item in data["historical"]:
+            fecha = datetime.strptime(item["date"], "%Y-%m-%d")
+
+            if fecha.year == año and fecha.month == mes:
+                resultados.append({
+                    "fecha": fecha,
+                    "dividendo": float(item["dividend"])
+                })
+
+        return resultados
+
+    except:
         return []
 
-    resultados = []
-    for fecha, value in hist.items():
-        if fecha.year == año and fecha.month == mes:
-            resultados.append((fecha, float(value)))
-    return resultados
+# ==============================
+# PROCESAR CARTERA
+# ==============================
 
 filas = []
 
 for nombre, ticker, acciones in cartera:
-    pagos = dividendos_del_mes(ticker)
+
+    pagos = obtener_dividendos_mes(ticker, año, mes)
+
     if not pagos:
         continue
 
-    info = yf.Ticker(ticker).info
-    currency = info.get("currency", "EUR")
+    for pago in pagos:
 
-    for fecha, div in pagos:
+        fecha = pago["fecha"]
+        div = pago["dividendo"]
 
-        if currency == "USD":
-            tipo_cambio = rates["USD"]
-            div_eur = div / tipo_cambio
-        elif currency == "GBP":
-            tipo_cambio = rates["GBP"]
-            div_eur = div / tipo_cambio
+        # Determinar moneda por sufijo
+        if ticker.endswith(".L"):
+            currency = "GBP"
+        elif ticker.endswith(".MC") or ticker.endswith(".DE"):
+            currency = "EUR"
         else:
-            tipo_cambio = 1
+            currency = "USD"
+
+        # Conversión a EUR
+        if currency == "USD":
+            div_eur = div / rates["USD"]
+        elif currency == "GBP":
+            div_eur = div / rates["GBP"]
+        else:
             div_eur = div
 
         bruto_total = div_eur * acciones
@@ -113,7 +162,10 @@ for nombre, ticker, acciones in cartera:
             "Neto €": round(neto_total, 2)
         })
 
-# ---------------- CSS ----------------
+# ==============================
+# CSS
+# ==============================
+
 st.markdown("""
 <style>
 .calendar {
@@ -149,26 +201,26 @@ st.markdown("""
     padding: 6px;
     border-radius: 6px;
     font-size: 12px;
-    position: absolute;
 }
 .day:hover .tooltip {
     visibility: visible;
 }
-@media (max-width: 768px) {
-    .calendar { display: block; }
-    .day { margin-bottom: 10px; }
-}
 </style>
 """, unsafe_allow_html=True)
 
-# ---------------- RENDER ----------------
+# ==============================
+# RENDER
+# ==============================
+
 if not filas:
     st.warning("No hay dividendos para ese mes.")
 else:
+
     df = pd.DataFrame(filas)
 
     if vista == "Calendario":
-        calendario = calendar.monthcalendar(año, mes)
+
+        calendario_mes = calendar.monthcalendar(año, mes)
         pagos_por_dia = defaultdict(list)
 
         for _, row in df.iterrows():
@@ -176,7 +228,7 @@ else:
 
         html = '<div class="calendar">'
 
-        for semana in calendario:
+        for semana in calendario_mes:
             for dia in semana:
                 if dia == 0:
                     html += '<div class="day"></div>'
@@ -211,20 +263,20 @@ else:
             ---
             """, unsafe_allow_html=True)
 
-    # Resumen
     st.markdown("---")
     st.markdown(f"### Resumen mensual")
     st.markdown(f"Empresas que pagan: **{df['Empresa'].nunique()}**")
     st.markdown(f"Total neto estimado: **{round(df['Neto €'].sum(),2)} €**")
 
-    # Gráfico acumulado
     df_sorted = df.sort_values("Fecha")
     df_sorted["Acumulado"] = df_sorted["Neto €"].cumsum()
 
-    fig = px.line(df_sorted,
-                  x="Fecha",
-                  y="Acumulado",
-                  markers=True,
-                  title="Acumulado Neto en el Mes")
+    fig = px.line(
+        df_sorted,
+        x="Fecha",
+        y="Acumulado",
+        markers=True,
+        title="Acumulado Neto en el Mes"
+    )
 
     st.plotly_chart(fig, use_container_width=True)
