@@ -20,12 +20,34 @@ def cargar_datos():
 
     xls = pd.ExcelFile(RUTA, engine="openpyxl")
 
-    st.write("📂 Hojas detectadas en el Excel:")
-    st.write(xls.sheet_names)
+    hojas_limpias = {h.strip().lower(): h for h in xls.sheet_names}
 
-    st.stop()
+    hoja_cartera = None
+    hoja_dividendos = None
 
-df = cargar_datos()
+    for limpia, original in hojas_limpias.items():
+        if "cartera" in limpia:
+            hoja_cartera = original
+        if "dividendo" in limpia:
+            hoja_dividendos = original
+
+    if hoja_cartera is None:
+        st.error("No se encontró hoja de cartera.")
+        st.write("Hojas disponibles:", xls.sheet_names)
+        st.stop()
+
+    if hoja_dividendos is None:
+        st.error("No se encontró hoja de dividendos.")
+        st.write("Hojas disponibles:", xls.sheet_names)
+        st.stop()
+
+    cartera = pd.read_excel(RUTA, sheet_name=hoja_cartera, engine="openpyxl")
+    dividendos = pd.read_excel(RUTA, sheet_name=hoja_dividendos, engine="openpyxl")
+
+    return cartera, dividendos
+
+
+cartera_df, dividendos_df = cargar_datos()
 
 # ==============================
 # INPUTS
@@ -177,4 +199,5 @@ df_sorted["Acumulado"] = df_sorted["Neto €"].cumsum()
 
 fig = px.line(df_sorted, x="Fecha", y="Acumulado", markers=True)
 st.plotly_chart(fig, use_container_width=True)
+
 
