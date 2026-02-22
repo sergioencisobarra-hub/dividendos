@@ -2,6 +2,8 @@ import streamlit as st
 import pandas as pd
 import requests
 import calendar
+import json
+import os
 from datetime import datetime
 from collections import defaultdict
 import plotly.express as px
@@ -10,13 +12,14 @@ import plotly.express as px
 # CONFIGURACIÓN
 # ======================================
 
-st.set_page_config(page_title="Dividendos Automáticos", layout="wide")
-st.title("📆 Dividendos Automáticos Internacionales")
+st.set_page_config(page_title="Dividendos Estables", layout="wide")
+st.title("📆 Dividendos Automáticos (Modo Estable)")
 
 API_KEY = "hD9hC5yNHNLgzSn88NaDvmCIMOEEkMho"
+CACHE_FILE = "dividendos_cache.json"
 
 # ======================================
-# CARTERA (simplificada ejemplo)
+# CARTERA
 # ======================================
 
 cartera = {
@@ -50,7 +53,7 @@ año = st.number_input("Año", value=datetime.now().year)
 vista = st.radio("Vista", ["Calendario", "Lista"], horizontal=True)
 
 # ======================================
-# TIPOS DE CAMBIO
+# TIPOS CAMBIO
 # ======================================
 
 def obtener_fx():
@@ -64,8 +67,6 @@ def obtener_fx():
             return data["rates"]
     except:
         pass
-
-    # fallback seguro
     return {"USD": 1.10, "GBP": 0.85}
 
 rates = obtener_fx()
@@ -80,7 +81,6 @@ def calcular_neto(bruto, moneda):
         "GBP": 0.0,
         "EUR": 0.19
     }
-
     ret_esp = 0.19
     r_origen = ret_origen.get(moneda, 0.19)
 
@@ -90,11 +90,10 @@ def calcular_neto(bruto, moneda):
         return bruto * (1 - r_origen) * (1 - ret_esp)
 
 # ======================================
-# OBTENER CALENDARIO GLOBAL FMP
+# DESCARGAR CALENDARIO
 # ======================================
 
-@st.cache_data(ttl=3600)
-def obtener_calendario_mes(año, mes):
+def descargar_calendario(año, mes):
 
     inicio = f"{año}-{mes:02d}-01"
     fin = f"{año}-{mes:02d}-31"
@@ -108,28 +107,50 @@ def obtener_calendario_mes(año, mes):
         r = requests.get(url, timeout=15)
         data = r.json()
 
-        # Validación estricta
-        if not isinstance(data, list):
+        if isinstance(data, list):
+            # Guardar cache
+            with open(CACHE_FILE, "w") as f:
+                json.dump(data, f)
+            return data
+        else:
             return None
-
-        return data
 
     except:
         return None
 
-
-data = obtener_calendario_mes(año, mes)
-
 # ======================================
-# VALIDACIÓN RESPUESTA API
+# CARGAR DESDE CACHE
 # ======================================
 
-if data is None:
-    st.error("La API no devolvió una lista válida. Posible límite alcanzado o error externo.")
-    st.stop()
+def cargar_cache():
+    if os.path.exists(CACHE_FILE):
+        with open(CACHE_FILE, "r") as f:
+            return json.load(f)
+    return None
 
-if len(data) == 0:
-    st.warning("No hay dividendos en el calendario global para ese mes.")
+# ======================================
+# BOTÓN ACTUALIZAR
+# ======================================
+
+if st.button("Actualizar datos desde API"):
+    data = descargar_calendario(año, mes)
+    if data:
+        st.success("Datos actualizados correctamente.")
+    else:
+        st.error("No se pudieron actualizar datos desde API.")
+
+# ======================================
+# OBTENER DATOS (API O CACHE)
+# ======================================
+
+data = descargar_calendario(año, mes)
+
+if not data:
+    st.warning("Usando datos guardados en caché.")
+    data = cargar_cache()
+
+if not data:
+    st.error("No hay datos disponibles ni en API ni en caché.")
     st.stop()
 
 # ======================================
@@ -139,9 +160,6 @@ if len(data) == 0:
 filas = []
 
 for item in data:
-
-    if not isinstance(item, dict):
-        continue
 
     ticker = item.get("symbol")
 
@@ -162,7 +180,6 @@ for item in data:
 
     acciones = cartera[ticker]
 
-    # Detectar moneda por sufijo
     if ticker.endswith(".L"):
         moneda = "GBP"
     elif ticker.endswith(".MC") or ticker.endswith(".DE"):
@@ -170,7 +187,6 @@ for item in data:
     else:
         moneda = "USD"
 
-    # Conversión
     if moneda == "USD":
         div_eur = div / rates["USD"]
     elif moneda == "GBP":
@@ -189,13 +205,13 @@ for item in data:
     })
 
 if not filas:
-    st.warning("Ninguna empresa de tu cartera paga ese mes según la API.")
+    st.warning("Ninguna empresa de tu cartera paga ese mes según datos disponibles.")
     st.stop()
 
 df = pd.DataFrame(filas)
 
 # ======================================
-# CALENDARIO VISUAL
+# CALENDARIO
 # ======================================
 
 if vista == "Calendario":
@@ -236,22 +252,11 @@ if vista == "Calendario":
 else:
     st.dataframe(df.sort_values("Fecha"))
 
-# ======================================
-# RESUMEN
-# ======================================
-
 st.markdown("---")
 st.markdown(f"### Total neto mensual estimado: **{round(df['Neto €'].sum(),2)} €**")
 
 df_sorted = df.sort_values("Fecha")
 df_sorted["Acumulado"] = df_sorted["Neto €"].cumsum()
 
-fig = px.line(
-    df_sorted,
-    x="Fecha",
-    y="Acumulado",
-    markers=True,
-    title="Acumulado Neto en el Mes"
-)
-
+fig = px.line(df_sorted, x="Fecha", y="Acumulado", markers=True)
 st.plotly_chart(fig, use_container_width=True)
