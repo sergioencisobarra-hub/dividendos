@@ -1,39 +1,33 @@
 import streamlit as st
 import pandas as pd
-import requests
 import calendar
 from datetime import datetime
 from collections import defaultdict
 import plotly.express as px
+import requests
+
+st.set_page_config(page_title="Dividendos desde Excel", layout="wide")
+st.title("📆 Calendario de Dividendos (Fuente Excel)")
 
 # ==============================
-# CONFIGURACIÓN
+# CARGAR EXCEL
 # ==============================
 
-st.set_page_config(page_title="Panel Dividendos Internacional", layout="wide")
-st.title("📆 Panel Profesional de Dividendos")
+RUTA = "CARTERA_acc_etf_fon.xlsx"
 
-API_KEY = "hD9hC5yNHNLgzSn88NaDvmCIMOEEkMho"
+@st.cache_data
+def cargar_datos():
+    cartera = pd.read_excel(RUTA, sheet_name="CARTERA", engine="openpyxl")
+    dividendos = pd.read_excel(RUTA, sheet_name="DIVIDENDOS_PREVISTOS", engine="openpyxl")
 
-# ==============================
-# CARTERA
-# ==============================
+    dividendos["Fecha_ex"] = pd.to_datetime(dividendos["Fecha_ex"])
+    dividendos["Fecha_pago"] = pd.to_datetime(dividendos["Fecha_pago"])
 
-cartera = [
-    ("ENAGÁS", "ENG.MC", 350),
-    ("INDITEX", "ITX.MC", 100),
-    ("REDEIA", "RED.MC", 350),
-    ("NATIONAL GRID", "NG.L", 290),
-    ("SHELL", "SHEL.L", 100),
-    ("BASF", "BAS.DE", 25),
-    ("PFIZER", "PFE", 75),
-    ("PEPSICO", "PEP", 20),
-    ("IBM", "IBM", 15),
-    ("REALTY INCOME", "O", 25),
-    ("MICROSOFT", "MSFT", 5),
-    ("JOHNSON & JOHNSON", "JNJ", 10),
-    ("PROCTER & GAMBLE", "PG", 25),
-]
+    df = dividendos.merge(cartera, on=["Empresa", "Ticker"], how="left")
+
+    return df
+
+df = cargar_datos()
 
 # ==============================
 # INPUTS
@@ -68,7 +62,7 @@ rates = obtener_tipos_cambio()
 # RETENCIONES
 # ==============================
 
-def calcular_neto(bruto_total, currency):
+def calcular_neto(bruto_total, moneda):
     ret_origen = {
         "USD": 0.30,
         "GBP": 0.0,
@@ -76,9 +70,9 @@ def calcular_neto(bruto_total, currency):
     }
 
     ret_esp = 0.19
-    r_origen = ret_origen.get(currency, 0.19)
+    r_origen = ret_origen.get(moneda, 0.19)
 
-    if currency == "EUR":
+    if moneda == "EUR":
         neto = bruto_total * (1 - ret_esp)
     else:
         neto = bruto_total * (1 - r_origen) * (1 - ret_esp)
@@ -86,197 +80,102 @@ def calcular_neto(bruto_total, currency):
     return neto
 
 # ==============================
-# OBTENER DIVIDENDOS DESDE FMP
+# FILTRAR MES
 # ==============================
 
-def obtener_dividendos_mes(ticker, año, mes):
+df_mes = df[
+    (df["Fecha_pago"].dt.month == mes) &
+    (df["Fecha_pago"].dt.year == año)
+].copy()
 
-    url = f"https://financialmodelingprep.com/api/v3/historical-price-full/stock_dividend/{ticker}?apikey={API_KEY}"
+if df_mes.empty:
+    st.warning("No hay dividendos ese mes.")
+    st.stop()
 
-    try:
-        response = requests.get(url)
-        data = response.json()
+# Conversión y cálculo
+resultados = []
 
-        if "historical" not in data:
-            return []
+for _, row in df_mes.iterrows():
 
-        resultados = []
+    div = row["Dividendo_por_accion"]
+    acciones = row["Acciones"]
+    moneda = row["Moneda"]
 
-        for item in data["historical"]:
-            fecha = datetime.strptime(item["date"], "%Y-%m-%d")
-
-            if fecha.year == año and fecha.month == mes:
-                resultados.append({
-                    "fecha": fecha,
-                    "dividendo": float(item["dividend"])
-                })
-
-        return resultados
-
-    except:
-        return []
-
-# ==============================
-# PROCESAR CARTERA
-# ==============================
-
-filas = []
-
-for nombre, ticker, acciones in cartera:
-
-    pagos = obtener_dividendos_mes(ticker, año, mes)
-
-    if not pagos:
-        continue
-
-    for pago in pagos:
-
-        fecha = pago["fecha"]
-        div = pago["dividendo"]
-
-        # Determinar moneda por sufijo
-        if ticker.endswith(".L"):
-            currency = "GBP"
-        elif ticker.endswith(".MC") or ticker.endswith(".DE"):
-            currency = "EUR"
-        else:
-            currency = "USD"
-
-        # Conversión a EUR
-        if currency == "USD":
-            div_eur = div / rates["USD"]
-        elif currency == "GBP":
-            div_eur = div / rates["GBP"]
-        else:
-            div_eur = div
-
-        bruto_total = div_eur * acciones
-        neto_total = calcular_neto(bruto_total, currency)
-
-        filas.append({
-            "Empresa": nombre,
-            "Ticker": ticker,
-            "Fecha": fecha.date(),
-            "Día": fecha.day,
-            "Bruto €": round(bruto_total, 2),
-            "Neto €": round(neto_total, 2)
-        })
-
-# ==============================
-# CSS
-# ==============================
-
-st.markdown("""
-<style>
-.calendar {
-    display: grid;
-    grid-template-columns: repeat(7, 1fr);
-    gap: 8px;
-    font-family: monospace;
-}
-.day {
-    border: 1px solid #e6e6e6;
-    padding: 10px;
-    min-height: 100px;
-    border-radius: 6px;
-    transition: all 0.2s ease-in-out;
-}
-.day:hover {
-    transform: translateY(-2px);
-    box-shadow: 0px 4px 12px rgba(0,0,0,0.08);
-}
-.has-dividend {
-    border-left: 6px solid #0047AB;
-}
-.ticker {
-    font-weight: bold;
-    color: #0047AB;
-    display: block;
-    margin-top: 6px;
-}
-.tooltip {
-    visibility: hidden;
-    background-color: #111;
-    color: #fff;
-    padding: 6px;
-    border-radius: 6px;
-    font-size: 12px;
-}
-.day:hover .tooltip {
-    visibility: visible;
-}
-</style>
-""", unsafe_allow_html=True)
-
-# ==============================
-# RENDER
-# ==============================
-
-if not filas:
-    st.warning("No hay dividendos para ese mes.")
-else:
-
-    df = pd.DataFrame(filas)
-
-    if vista == "Calendario":
-
-        calendario_mes = calendar.monthcalendar(año, mes)
-        pagos_por_dia = defaultdict(list)
-
-        for _, row in df.iterrows():
-            pagos_por_dia[row["Día"]].append(row)
-
-        html = '<div class="calendar">'
-
-        for semana in calendario_mes:
-            for dia in semana:
-                if dia == 0:
-                    html += '<div class="day"></div>'
-                else:
-                    pagos = pagos_por_dia.get(dia, [])
-                    if pagos:
-                        total_dia = sum(p["Neto €"] for p in pagos)
-                        intensidad = min(total_dia / 200, 1)
-                        color = f"rgba(0,71,171,{0.08 + intensidad*0.3})"
-
-                        html += f'<div class="day has-dividend" style="background-color:{color}">'
-                        html += f'<div><strong>{dia}</strong></div>'
-
-                        for p in pagos:
-                            html += f'<span class="ticker">{p["Ticker"]}</span>'
-
-                        html += f'<div class="tooltip">Total día: {round(total_dia,2)} €</div>'
-                        html += '</div>'
-                    else:
-                        html += f'<div class="day"><strong>{dia}</strong></div>'
-
-        html += '</div>'
-        st.markdown(html, unsafe_allow_html=True)
-
+    if moneda == "USD":
+        div_eur = div / rates["USD"]
+    elif moneda == "GBP":
+        div_eur = div / rates["GBP"]
     else:
-        df_sorted = df.sort_values("Fecha")
-        for _, row in df_sorted.iterrows():
-            st.markdown(f"""
-            **{row['Fecha']}**  
-            <span style="color:#0047AB; font-weight:bold;">{row['Ticker']}</span>  
-            Neto estimado: {row['Neto €']} €  
-            ---
-            """, unsafe_allow_html=True)
+        div_eur = div
 
-    st.markdown("---")
-    st.markdown(f"### Resumen mensual")
-    st.markdown(f"Empresas que pagan: **{df['Empresa'].nunique()}**")
-    st.markdown(f"Total neto estimado: **{round(df['Neto €'].sum(),2)} €**")
+    bruto = div_eur * acciones
+    neto = calcular_neto(bruto, moneda)
 
-    df_sorted = df.sort_values("Fecha")
-    df_sorted["Acumulado"] = df_sorted["Neto €"].cumsum()
+    resultados.append({
+        "Empresa": row["Empresa"],
+        "Ticker": row["Ticker"],
+        "Fecha": row["Fecha_pago"].date(),
+        "Día": row["Fecha_pago"].day,
+        "Bruto €": round(bruto, 2),
+        "Neto €": round(neto, 2)
+    })
 
-    fig = px.line(
-        df_sorted,
-        x="Fecha",
-        y="Acumulado",
-        markers=True,
-        title="Acumulado Neto en el Mes"
-    )
+df_final = pd.DataFrame(resultados)
 
-    st.plotly_chart(fig, use_container_width=True)
+# ==============================
+# CALENDARIO
+# ==============================
+
+if vista == "Calendario":
+
+    calendario_mes = calendar.monthcalendar(año, mes)
+    pagos_por_dia = defaultdict(list)
+
+    for _, row in df_final.iterrows():
+        pagos_por_dia[row["Día"]].append(row)
+
+    html = '<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:8px;font-family:monospace;">'
+
+    for semana in calendario_mes:
+        for dia in semana:
+            if dia == 0:
+                html += '<div style="border:1px solid #eee;min-height:100px;"></div>'
+            else:
+                pagos = pagos_por_dia.get(dia, [])
+                if pagos:
+                    total = sum(p["Neto €"] for p in pagos)
+                    intensidad = min(total / 200, 1)
+                    color = f"rgba(0,71,171,{0.1 + intensidad*0.3})"
+
+                    html += f'<div style="border-left:6px solid #0047AB;background:{color};padding:8px;min-height:100px;">'
+                    html += f"<strong>{dia}</strong><br>"
+
+                    for p in pagos:
+                        html += f"<span style='color:#0047AB;font-weight:bold'>{p['Ticker']}</span><br>"
+
+                    html += f"<small>Total: {round(total,2)} €</small>"
+                    html += "</div>"
+                else:
+                    html += f'<div style="border:1px solid #eee;padding:8px;min-height:100px;"><strong>{dia}</strong></div>'
+
+    html += "</div>"
+    st.markdown(html, unsafe_allow_html=True)
+
+else:
+    df_sorted = df_final.sort_values("Fecha")
+    st.dataframe(df_sorted)
+
+# ==============================
+# RESUMEN
+# ==============================
+
+st.markdown("---")
+st.markdown(f"### Resumen mensual")
+st.markdown(f"Empresas que pagan: **{df_final['Empresa'].nunique()}**")
+st.markdown(f"Total neto estimado: **{round(df_final['Neto €'].sum(),2)} €**")
+
+df_sorted = df_final.sort_values("Fecha")
+df_sorted["Acumulado"] = df_sorted["Neto €"].cumsum()
+
+fig = px.line(df_sorted, x="Fecha", y="Acumulado", markers=True)
+st.plotly_chart(fig, use_container_width=True)
