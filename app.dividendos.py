@@ -6,12 +6,18 @@ from datetime import datetime
 from collections import defaultdict
 import plotly.express as px
 
+# ======================================
+# CONFIGURACIÓN
+# ======================================
+
 st.set_page_config(page_title="Dividendos Automáticos", layout="wide")
 st.title("📆 Dividendos Automáticos Internacionales")
 
 API_KEY = "hD9hC5yNHNLgzSn88NaDvmCIMOEEkMho"
 
-# ================= CARTERA =================
+# ======================================
+# CARTERA (simplificada ejemplo)
+# ======================================
 
 cartera = {
     "ENG.MC": 350,
@@ -29,29 +35,44 @@ cartera = {
     "PG": 25,
 }
 
-# ================= INPUT =================
+# ======================================
+# INPUTS
+# ======================================
 
-mes = st.selectbox("Mes", list(range(1, 13)),
-                   format_func=lambda x: datetime(2025, x, 1).strftime("%B"))
+mes = st.selectbox(
+    "Mes",
+    list(range(1, 13)),
+    format_func=lambda x: datetime(2025, x, 1).strftime("%B")
+)
 
 año = st.number_input("Año", value=datetime.now().year)
 
 vista = st.radio("Vista", ["Calendario", "Lista"], horizontal=True)
 
-# ================= TIPOS CAMBIO =================
+# ======================================
+# TIPOS DE CAMBIO
+# ======================================
 
 def obtener_fx():
     try:
         r = requests.get(
-            "https://api.exchangerate.host/latest?base=EUR&symbols=USD,GBP"
-        ).json()
-        return r["rates"]
+            "https://api.exchangerate.host/latest?base=EUR&symbols=USD,GBP",
+            timeout=10
+        )
+        data = r.json()
+        if "rates" in data:
+            return data["rates"]
     except:
-        return {"USD": 1.10, "GBP": 0.85}
+        pass
+
+    # fallback seguro
+    return {"USD": 1.10, "GBP": 0.85}
 
 rates = obtener_fx()
 
-# ================= RETENCIONES =================
+# ======================================
+# RETENCIONES
+# ======================================
 
 def calcular_neto(bruto, moneda):
     ret_origen = {
@@ -59,6 +80,7 @@ def calcular_neto(bruto, moneda):
         "GBP": 0.0,
         "EUR": 0.19
     }
+
     ret_esp = 0.19
     r_origen = ret_origen.get(moneda, 0.19)
 
@@ -67,7 +89,9 @@ def calcular_neto(bruto, moneda):
     else:
         return bruto * (1 - r_origen) * (1 - ret_esp)
 
-# ================= OBTENER CALENDARIO GLOBAL =================
+# ======================================
+# OBTENER CALENDARIO GLOBAL FMP
+# ======================================
 
 @st.cache_data(ttl=3600)
 def obtener_calendario_mes(año, mes):
@@ -75,31 +99,68 @@ def obtener_calendario_mes(año, mes):
     inicio = f"{año}-{mes:02d}-01"
     fin = f"{año}-{mes:02d}-31"
 
-    url = f"https://financialmodelingprep.com/api/v3/stock_dividend_calendar?from={inicio}&to={fin}&apikey={API_KEY}"
+    url = (
+        "https://financialmodelingprep.com/api/v3/"
+        f"stock_dividend_calendar?from={inicio}&to={fin}&apikey={API_KEY}"
+    )
 
-    r = requests.get(url)
-    data = r.json()
+    try:
+        r = requests.get(url, timeout=15)
+        data = r.json()
 
-    return data
+        # Validación estricta
+        if not isinstance(data, list):
+            return None
+
+        return data
+
+    except:
+        return None
+
 
 data = obtener_calendario_mes(año, mes)
-st.write("Respuesta API:", data)
-st.stop()
 
-# ================= FILTRAR CARTERA =================
+# ======================================
+# VALIDACIÓN RESPUESTA API
+# ======================================
+
+if data is None:
+    st.error("La API no devolvió una lista válida. Posible límite alcanzado o error externo.")
+    st.stop()
+
+if len(data) == 0:
+    st.warning("No hay dividendos en el calendario global para ese mes.")
+    st.stop()
+
+# ======================================
+# FILTRAR CARTERA
+# ======================================
 
 filas = []
 
 for item in data:
 
-    ticker = item["symbol"]
+    if not isinstance(item, dict):
+        continue
+
+    ticker = item.get("symbol")
 
     if ticker not in cartera:
         continue
 
+    payment_date = item.get("paymentDate")
+    dividend = item.get("dividend")
+
+    if not payment_date or not dividend:
+        continue
+
+    try:
+        fecha_pago = datetime.strptime(payment_date, "%Y-%m-%d")
+        div = float(dividend)
+    except:
+        continue
+
     acciones = cartera[ticker]
-    fecha_pago = datetime.strptime(item["paymentDate"], "%Y-%m-%d")
-    div = float(item["dividend"])
 
     # Detectar moneda por sufijo
     if ticker.endswith(".L"):
@@ -109,6 +170,7 @@ for item in data:
     else:
         moneda = "USD"
 
+    # Conversión
     if moneda == "USD":
         div_eur = div / rates["USD"]
     elif moneda == "GBP":
@@ -127,12 +189,14 @@ for item in data:
     })
 
 if not filas:
-    st.warning("No hay dividendos ese mes.")
+    st.warning("Ninguna empresa de tu cartera paga ese mes según la API.")
     st.stop()
 
 df = pd.DataFrame(filas)
 
-# ================= CALENDARIO =================
+# ======================================
+# CALENDARIO VISUAL
+# ======================================
 
 if vista == "Calendario":
 
@@ -172,12 +236,22 @@ if vista == "Calendario":
 else:
     st.dataframe(df.sort_values("Fecha"))
 
+# ======================================
+# RESUMEN
+# ======================================
+
 st.markdown("---")
 st.markdown(f"### Total neto mensual estimado: **{round(df['Neto €'].sum(),2)} €**")
 
 df_sorted = df.sort_values("Fecha")
 df_sorted["Acumulado"] = df_sorted["Neto €"].cumsum()
 
-fig = px.line(df_sorted, x="Fecha", y="Acumulado", markers=True)
-st.plotly_chart(fig, use_container_width=True)
+fig = px.line(
+    df_sorted,
+    x="Fecha",
+    y="Acumulado",
+    markers=True,
+    title="Acumulado Neto en el Mes"
+)
 
+st.plotly_chart(fig, use_container_width=True)
