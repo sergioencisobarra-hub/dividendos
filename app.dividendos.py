@@ -83,6 +83,8 @@ def obtener_calendario_mes(año, mes):
     return data
 
 data = obtener_calendario_mes(año, mes)
+st.write("Respuesta API:", data)
+st.stop()
 
 # ================= FILTRAR CARTERA =================
 
@@ -178,3 +180,4 @@ df_sorted["Acumulado"] = df_sorted["Neto €"].cumsum()
 
 fig = px.line(df_sorted, x="Fecha", y="Acumulado", markers=True)
 st.plotly_chart(fig, use_container_width=True)
+
