@@ -1,73 +1,46 @@
 import streamlit as st
 import pandas as pd
+import requests
 import calendar
 from datetime import datetime
 from collections import defaultdict
 import plotly.express as px
-import requests
 
-st.set_page_config(page_title="Dividendos desde Excel", layout="wide")
-st.title("📆 Calendario de Dividendos (Fuente Excel)")
+st.set_page_config(page_title="Dividendos Automáticos", layout="wide")
+st.title("📆 Dividendos Automáticos Internacionales")
 
-# ==============================
-# CARGAR EXCEL
-# ==============================
+API_KEY = "hD9hC5yNHNLgzSn88NaDvmCIMOEEkMho"
 
-RUTA = "CARTERA_acc_etf_fon.xlsx"
+# ================= CARTERA =================
 
-@st.cache_data
-def cargar_datos():
+cartera = {
+    "ENG.MC": 350,
+    "ITX.MC": 100,
+    "RED.MC": 350,
+    "NG.L": 290,
+    "SHEL.L": 100,
+    "BAS.DE": 25,
+    "PFE": 75,
+    "PEP": 20,
+    "IBM": 15,
+    "O": 25,
+    "MSFT": 5,
+    "JNJ": 10,
+    "PG": 25,
+}
 
-    xls = pd.ExcelFile(RUTA, engine="openpyxl")
+# ================= INPUT =================
 
-    hojas_limpias = {h.strip().lower(): h for h in xls.sheet_names}
-
-    hoja_cartera = None
-    hoja_dividendos = None
-
-    for limpia, original in hojas_limpias.items():
-        if "cartera" in limpia:
-            hoja_cartera = original
-        if "dividendo" in limpia:
-            hoja_dividendos = original
-
-    if hoja_cartera is None:
-        st.error("No se encontró hoja de cartera.")
-        st.write("Hojas disponibles:", xls.sheet_names)
-        st.stop()
-
-    if hoja_dividendos is None:
-        st.error("No se encontró hoja de dividendos.")
-        st.write("Hojas disponibles:", xls.sheet_names)
-        st.stop()
-
-    cartera = pd.read_excel(RUTA, sheet_name=hoja_cartera, engine="openpyxl")
-    dividendos = pd.read_excel(RUTA, sheet_name=hoja_dividendos, engine="openpyxl")
-
-    return cartera, dividendos
-
-
-cartera_df, dividendos_df = cargar_datos()
-
-# ==============================
-# INPUTS
-# ==============================
-
-mes = st.selectbox(
-    "Mes",
-    list(range(1, 13)),
-    format_func=lambda x: datetime(2025, x, 1).strftime("%B")
-)
+mes = st.selectbox("Mes", list(range(1, 13)),
+                   format_func=lambda x: datetime(2025, x, 1).strftime("%B"))
 
 año = st.number_input("Año", value=datetime.now().year)
 
-vista = st.radio("Vista", ["Calendario", "Detalle de Lista"], horizontal=True)
+vista = st.radio("Vista", ["Calendario", "Lista"], horizontal=True)
 
-# ==============================
-# TIPOS DE CAMBIO
-# ==============================
+# ================= TIPOS CAMBIO =================
 
-def obtener_tipos_cambio():
+def obtener_fx():
     try:
         r = requests.get(
             "https://api.exchangerate.host/latest?base=EUR&symbols=USD,GBP"
@@ -76,50 +49,63 @@ def obtener_tipos_cambio():
     except:
         return {"USD": 1.10, "GBP": 0.85}
 
-rates = obtener_tipos_cambio()
+rates = obtener_fx()
 
-# ==============================
-# RETENCIONES
-# ==============================
+# ================= RETENCIONES =================
 
-def calcular_neto(bruto_total, moneda):
+def calcular_neto(bruto, moneda):
     ret_origen = {
         "USD": 0.30,
         "GBP": 0.0,
         "EUR": 0.19
     }
-
     ret_esp = 0.19
     r_origen = ret_origen.get(moneda, 0.19)
 
     if moneda == "EUR":
-        neto = bruto_total * (1 - ret_esp)
+        return bruto * (1 - ret_esp)
     else:
-        neto = bruto_total * (1 - r_origen) * (1 - ret_esp)
+        return bruto * (1 - r_origen) * (1 - ret_esp)
 
-    return neto
+# ================= OBTENER CALENDARIO GLOBAL =================
 
-# ==============================
-# FILTRAR MES
-# ==============================
+@st.cache_data(ttl=3600)
+def obtener_calendario_mes(año, mes):
 
-df_mes = df[
-    (df["Fecha_pago"].dt.month == mes) &
-    (df["Fecha_pago"].dt.year == año)
-].copy()
+    inicio = f"{año}-{mes:02d}-01"
+    fin = f"{año}-{mes:02d}-31"
 
-if df_mes.empty:
-    st.warning("No hay dividendos ese mes.")
-    st.stop()
+    url = f"https://financialmodelingprep.com/api/v3/stock_dividend_calendar?from={inicio}&to={fin}&apikey={API_KEY}"
 
-# Conversión y cálculo
-resultados = []
+    r = requests.get(url)
+    data = r.json()
 
-for _, row in df_mes.iterrows():
+    return data
 
-    div = row["Dividendo_por_accion"]
-    acciones = row["Acciones"]
-    moneda = row["Moneda"]
+data = obtener_calendario_mes(año, mes)
+
+# ================= FILTRAR CARTERA =================
+
+filas = []
+
+for item in data:
+
+    ticker = item["symbol"]
+
+    if ticker not in cartera:
+        continue
+
+    acciones = cartera[ticker]
+    fecha_pago = datetime.strptime(item["paymentDate"], "%Y-%m-%d")
+    div = float(item["dividend"])
+
+    # Detectar moneda por sufijo
+    if ticker.endswith(".L"):
+        moneda = "GBP"
+    elif ticker.endswith(".MC") or ticker.endswith(".DE"):
+        moneda = "EUR"
+    else:
+        moneda = "USD"
 
     if moneda == "USD":
         div_eur = div / rates["USD"]
@@ -131,27 +117,27 @@ for _, row in df_mes.iterrows():
     bruto = div_eur * acciones
     neto = calcular_neto(bruto, moneda)
 
-    resultados.append({
-        "Empresa": row["Empresa"],
-        "Ticker": row["Ticker"],
-        "Fecha": row["Fecha_pago"].date(),
-        "Día": row["Fecha_pago"].day,
-        "Bruto €": round(bruto, 2),
+    filas.append({
+        "Ticker": ticker,
+        "Fecha": fecha_pago.date(),
+        "Día": fecha_pago.day,
         "Neto €": round(neto, 2)
     })
 
-df_final = pd.DataFrame(resultados)
+if not filas:
+    st.warning("No hay dividendos ese mes.")
+    st.stop()
 
-# ==============================
-# CALENDARIO
-# ==============================
+df = pd.DataFrame(filas)
+
+# ================= CALENDARIO =================
 
 if vista == "Calendario":
 
     calendario_mes = calendar.monthcalendar(año, mes)
     pagos_por_dia = defaultdict(list)
 
-    for _, row in df_final.iterrows():
+    for _, row in df.iterrows():
         pagos_por_dia[row["Día"]].append(row)
 
     html = '<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:8px;font-family:monospace;">'
@@ -182,23 +168,13 @@ if vista == "Calendario":
     st.markdown(html, unsafe_allow_html=True)
 
 else:
-    df_sorted = df_final.sort_values("Fecha")
-    st.dataframe(df_sorted)
-
-# ==============================
-# RESUMEN
-# ==============================
+    st.dataframe(df.sort_values("Fecha"))
 
 st.markdown("---")
-st.markdown(f"### Resumen mensual")
-st.markdown(f"Empresas que pagan: **{df_final['Empresa'].nunique()}**")
-st.markdown(f"Total neto estimado: **{round(df_final['Neto €'].sum(),2)} €**")
+st.markdown(f"### Total neto mensual estimado: **{round(df['Neto €'].sum(),2)} €**")
 
-df_sorted = df_final.sort_values("Fecha")
+df_sorted = df.sort_values("Fecha")
 df_sorted["Acumulado"] = df_sorted["Neto €"].cumsum()
 
 fig = px.line(df_sorted, x="Fecha", y="Acumulado", markers=True)
 st.plotly_chart(fig, use_container_width=True)
-
-
-
