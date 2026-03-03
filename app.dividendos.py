@@ -12,11 +12,14 @@ import plotly.express as px
 # CONFIGURACIÓN
 # ======================================
 
-st.set_page_config(page_title="Dividendos Estables", layout="wide")
-st.title("📆 Dividendos Automáticos (Modo Estable)")
+st.set_page_config(page_title="Dividendos Robustecidos", layout="wide")
+st.title("📆 Dividendos Automáticos (Modo Robusto)")
 
 API_KEY = "hD9hC5yNHNLgzSn88NaDvmCIMOEEkMho"
-CACHE_FILE = "dividendos_cache.json"
+CACHE_DIR = "cache_dividendos"
+
+if not os.path.exists(CACHE_DIR):
+    os.makedirs(CACHE_DIR)
 
 # ======================================
 # CARTERA
@@ -53,7 +56,7 @@ año = st.number_input("Año", value=datetime.now().year)
 vista = st.radio("Vista", ["Calendario", "Lista"], horizontal=True)
 
 # ======================================
-# TIPOS CAMBIO
+# TIPOS DE CAMBIO
 # ======================================
 
 def obtener_fx():
@@ -90,122 +93,88 @@ def calcular_neto(bruto, moneda):
         return bruto * (1 - r_origen) * (1 - ret_esp)
 
 # ======================================
-# DESCARGAR CALENDARIO
+# DESCARGAR HISTÓRICO POR TICKER
 # ======================================
 
-def descargar_calendario(año, mes):
+def obtener_historico_ticker(ticker):
 
-    inicio = f"{año}-{mes:02d}-01"
-    fin = f"{año}-{mes:02d}-31"
+    cache_file = os.path.join(CACHE_DIR, f"{ticker}.json")
 
-    url = (
-        "https://financialmodelingprep.com/api/v3/"
-        f"stock_dividend_calendar?from={inicio}&to={fin}&apikey={API_KEY}"
-    )
+    url = f"https://financialmodelingprep.com/api/v3/historical-price-full/stock_dividend/{ticker}?apikey={API_KEY}"
 
     try:
         r = requests.get(url, timeout=15)
         data = r.json()
 
-        if isinstance(data, list):
-            # Guardar cache
-            with open(CACHE_FILE, "w") as f:
-                json.dump(data, f)
-            return data
-        else:
-            return None
+        if "historical" in data and isinstance(data["historical"], list):
+            with open(cache_file, "w") as f:
+                json.dump(data["historical"], f)
+            return data["historical"]
 
     except:
-        return None
+        pass
 
-# ======================================
-# CARGAR DESDE CACHE
-# ======================================
-
-def cargar_cache():
-    if os.path.exists(CACHE_FILE):
-        with open(CACHE_FILE, "r") as f:
+    # fallback cache
+    if os.path.exists(cache_file):
+        with open(cache_file, "r") as f:
             return json.load(f)
-    return None
+
+    return []
 
 # ======================================
-# BOTÓN ACTUALIZAR
-# ======================================
-
-if st.button("Actualizar datos desde API"):
-    data = descargar_calendario(año, mes)
-    if data:
-        st.success("Datos actualizados correctamente.")
-    else:
-        st.error("No se pudieron actualizar datos desde API.")
-
-# ======================================
-# OBTENER DATOS (API O CACHE)
-# ======================================
-
-data = descargar_calendario(año, mes)
-
-if not data:
-    st.warning("Usando datos guardados en caché.")
-    data = cargar_cache()
-
-if not data:
-    st.error("No hay datos disponibles ni en API ni en caché.")
-    st.stop()
-
-# ======================================
-# FILTRAR CARTERA
+# PROCESAR CARTERA
 # ======================================
 
 filas = []
 
-for item in data:
+for ticker, acciones in cartera.items():
 
-    ticker = item.get("symbol")
+    historico = obtener_historico_ticker(ticker)
 
-    if ticker not in cartera:
-        continue
+    for item in historico:
 
-    payment_date = item.get("paymentDate")
-    dividend = item.get("dividend")
+        fecha_str = item.get("date")
+        dividend = item.get("dividend")
 
-    if not payment_date or not dividend:
-        continue
+        if not fecha_str or not dividend:
+            continue
 
-    try:
-        fecha_pago = datetime.strptime(payment_date, "%Y-%m-%d")
-        div = float(dividend)
-    except:
-        continue
+        try:
+            fecha = datetime.strptime(fecha_str, "%Y-%m-%d")
+            div = float(dividend)
+        except:
+            continue
 
-    acciones = cartera[ticker]
+        if fecha.year != año or fecha.month != mes:
+            continue
 
-    if ticker.endswith(".L"):
-        moneda = "GBP"
-    elif ticker.endswith(".MC") or ticker.endswith(".DE"):
-        moneda = "EUR"
-    else:
-        moneda = "USD"
+        # detectar moneda
+        if ticker.endswith(".L"):
+            moneda = "GBP"
+        elif ticker.endswith(".MC") or ticker.endswith(".DE"):
+            moneda = "EUR"
+        else:
+            moneda = "USD"
 
-    if moneda == "USD":
-        div_eur = div / rates["USD"]
-    elif moneda == "GBP":
-        div_eur = div / rates["GBP"]
-    else:
-        div_eur = div
+        if moneda == "USD":
+            div_eur = div / rates["USD"]
+        elif moneda == "GBP":
+            div_eur = div / rates["GBP"]
+        else:
+            div_eur = div
 
-    bruto = div_eur * acciones
-    neto = calcular_neto(bruto, moneda)
+        bruto = div_eur * acciones
+        neto = calcular_neto(bruto, moneda)
 
-    filas.append({
-        "Ticker": ticker,
-        "Fecha": fecha_pago.date(),
-        "Día": fecha_pago.day,
-        "Neto €": round(neto, 2)
-    })
+        filas.append({
+            "Ticker": ticker,
+            "Fecha": fecha.date(),
+            "Día": fecha.day,
+            "Neto €": round(neto, 2)
+        })
 
 if not filas:
-    st.warning("Ninguna empresa de tu cartera paga ese mes según datos disponibles.")
+    st.warning("No hay dividendos ese mes según histórico disponible.")
     st.stop()
 
 df = pd.DataFrame(filas)
@@ -258,5 +227,12 @@ st.markdown(f"### Total neto mensual estimado: **{round(df['Neto €'].sum(),2)}
 df_sorted = df.sort_values("Fecha")
 df_sorted["Acumulado"] = df_sorted["Neto €"].cumsum()
 
-fig = px.line(df_sorted, x="Fecha", y="Acumulado", markers=True)
+fig = px.line(
+    df_sorted,
+    x="Fecha",
+    y="Acumulado",
+    markers=True,
+    title="Acumulado Neto en el Mes"
+)
+
 st.plotly_chart(fig, use_container_width=True)
