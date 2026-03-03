@@ -6,14 +6,13 @@ import json
 import os
 from datetime import datetime
 from collections import defaultdict
+from dateutil.relativedelta import relativedelta
 import plotly.express as px
 
-# ======================================
-# CONFIGURACIÓN
-# ======================================
+# ================= CONFIG =================
 
-st.set_page_config(page_title="Dividendos Robustecidos", layout="wide")
-st.title("📆 Dividendos Automáticos (Modo Robusto)")
+st.set_page_config(page_title="Dividendos Proyectados", layout="wide")
+st.title("📆 Dividendos con Proyección Automática")
 
 API_KEY = "hD9hC5yNHNLgzSn88NaDvmCIMOEEkMho"
 CACHE_DIR = "cache_dividendos"
@@ -21,9 +20,7 @@ CACHE_DIR = "cache_dividendos"
 if not os.path.exists(CACHE_DIR):
     os.makedirs(CACHE_DIR)
 
-# ======================================
-# CARTERA
-# ======================================
+# ================= CARTERA =================
 
 cartera = {
     "ENG.MC": 350,
@@ -41,9 +38,7 @@ cartera = {
     "PG": 25,
 }
 
-# ======================================
-# INPUTS
-# ======================================
+# ================= INPUT =================
 
 mes = st.selectbox(
     "Mes",
@@ -55,9 +50,7 @@ año = st.number_input("Año", value=datetime.now().year)
 
 vista = st.radio("Vista", ["Calendario", "Lista"], horizontal=True)
 
-# ======================================
-# TIPOS DE CAMBIO
-# ======================================
+# ================= FX =================
 
 def obtener_fx():
     try:
@@ -74,9 +67,7 @@ def obtener_fx():
 
 rates = obtener_fx()
 
-# ======================================
-# RETENCIONES
-# ======================================
+# ================= RETENCIONES =================
 
 def calcular_neto(bruto, moneda):
     ret_origen = {
@@ -92,14 +83,11 @@ def calcular_neto(bruto, moneda):
     else:
         return bruto * (1 - r_origen) * (1 - ret_esp)
 
-# ======================================
-# DESCARGAR HISTÓRICO POR TICKER
-# ======================================
+# ================= HISTÓRICO =================
 
 def obtener_historico_ticker(ticker):
 
     cache_file = os.path.join(CACHE_DIR, f"{ticker}.json")
-
     url = f"https://financialmodelingprep.com/api/v3/historical-price-full/stock_dividend/{ticker}?apikey={API_KEY}"
 
     try:
@@ -114,16 +102,38 @@ def obtener_historico_ticker(ticker):
     except:
         pass
 
-    # fallback cache
     if os.path.exists(cache_file):
         with open(cache_file, "r") as f:
             return json.load(f)
 
     return []
 
-# ======================================
-# PROCESAR CARTERA
-# ======================================
+# ================= PROYECCIÓN =================
+
+def proyectar_siguiente_dividendo(historico):
+
+    if len(historico) < 2:
+        return None
+
+    df = pd.DataFrame(historico)
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.sort_values("date")
+
+    # Intervalos entre pagos
+    df["delta"] = df["date"].diff().dt.days
+    intervalo_medio = int(df["delta"].median())
+
+    if intervalo_medio <= 0:
+        return None
+
+    ultima_fecha = df["date"].iloc[-1]
+    ultimo_dividendo = df["dividend"].iloc[-1]
+
+    siguiente_fecha = ultima_fecha + relativedelta(days=intervalo_medio)
+
+    return siguiente_fecha, float(ultimo_dividendo)
+
+# ================= PROCESAR =================
 
 filas = []
 
@@ -131,57 +141,52 @@ for ticker, acciones in cartera.items():
 
     historico = obtener_historico_ticker(ticker)
 
-    for item in historico:
+    if not historico:
+        continue
 
-        fecha_str = item.get("date")
-        dividend = item.get("dividend")
+    proyeccion = proyectar_siguiente_dividendo(historico)
 
-        if not fecha_str or not dividend:
-            continue
+    if not proyeccion:
+        continue
 
-        try:
-            fecha = datetime.strptime(fecha_str, "%Y-%m-%d")
-            div = float(dividend)
-        except:
-            continue
+    fecha, div = proyeccion
 
-        if fecha.year != año or fecha.month != mes:
-            continue
+    if fecha.year != año or fecha.month != mes:
+        continue
 
-        # detectar moneda
-        if ticker.endswith(".L"):
-            moneda = "GBP"
-        elif ticker.endswith(".MC") or ticker.endswith(".DE"):
-            moneda = "EUR"
-        else:
-            moneda = "USD"
+    # detectar moneda
+    if ticker.endswith(".L"):
+        moneda = "GBP"
+    elif ticker.endswith(".MC") or ticker.endswith(".DE"):
+        moneda = "EUR"
+    else:
+        moneda = "USD"
 
-        if moneda == "USD":
-            div_eur = div / rates["USD"]
-        elif moneda == "GBP":
-            div_eur = div / rates["GBP"]
-        else:
-            div_eur = div
+    if moneda == "USD":
+        div_eur = div / rates["USD"]
+    elif moneda == "GBP":
+        div_eur = div / rates["GBP"]
+    else:
+        div_eur = div
 
-        bruto = div_eur * acciones
-        neto = calcular_neto(bruto, moneda)
+    bruto = div_eur * acciones
+    neto = calcular_neto(bruto, moneda)
 
-        filas.append({
-            "Ticker": ticker,
-            "Fecha": fecha.date(),
-            "Día": fecha.day,
-            "Neto €": round(neto, 2)
-        })
+    filas.append({
+        "Ticker": ticker,
+        "Fecha": fecha.date(),
+        "Día": fecha.day,
+        "Neto €": round(neto, 2),
+        "Tipo": "Estimado"
+    })
 
 if not filas:
-    st.warning("No hay dividendos ese mes según histórico disponible.")
+    st.warning("No hay dividendos estimados para ese mes.")
     st.stop()
 
 df = pd.DataFrame(filas)
 
-# ======================================
-# CALENDARIO
-# ======================================
+# ================= CALENDARIO =================
 
 if vista == "Calendario":
 
@@ -208,7 +213,7 @@ if vista == "Calendario":
                     html += f"<strong>{dia}</strong><br>"
 
                     for p in pagos:
-                        html += f"<span style='color:#0047AB;font-weight:bold'>{p['Ticker']}</span><br>"
+                        html += f"<span style='color:#0047AB;font-weight:bold'>{p['Ticker']} (Est.)</span><br>"
 
                     html += f"<small>Total: {round(total,2)} €</small>"
                     html += "</div>"
@@ -227,12 +232,5 @@ st.markdown(f"### Total neto mensual estimado: **{round(df['Neto €'].sum(),2)}
 df_sorted = df.sort_values("Fecha")
 df_sorted["Acumulado"] = df_sorted["Neto €"].cumsum()
 
-fig = px.line(
-    df_sorted,
-    x="Fecha",
-    y="Acumulado",
-    markers=True,
-    title="Acumulado Neto en el Mes"
-)
-
+fig = px.line(df_sorted, x="Fecha", y="Acumulado", markers=True)
 st.plotly_chart(fig, use_container_width=True)
